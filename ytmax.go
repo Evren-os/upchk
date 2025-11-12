@@ -96,6 +96,7 @@ func buildYTDLPArgs(url, codecPref, destinationPath, cookiesFrom string, socm bo
 
 	// Base arguments.
 	args := []string{
+		"--remote-components", "ejs:github",
 		"--prefer-free-formats",
 		"--format-sort-force",
 		"--no-mtime",
