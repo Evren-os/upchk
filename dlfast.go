@@ -27,6 +27,22 @@ const (
 	colorReset  = "\033[0m"
 )
 
+func logInfo(format string, args ...interface{}) {
+	fmt.Printf(colorCyan+"[INFO] "+colorReset+format+"\n", args...)
+}
+
+func logSuccess(format string, args ...interface{}) {
+	fmt.Printf(colorGreen+"[SUCCESS] "+colorReset+format+"\n", args...)
+}
+
+func logWarning(format string, args ...interface{}) {
+	fmt.Printf(colorYellow+"[WARNING] "+colorReset+format+"\n", args...)
+}
+
+func logError(format string, args ...interface{}) {
+	fmt.Printf(colorRed+"[ERROR] "+colorReset+format+"\n", args...)
+}
+
 // Pre-compiled regex patterns for better performance
 var (
 	contentDispositionFilenameStarRe = regexp.MustCompile(`filename\*\s*=\s*([^;]+)`)
@@ -35,8 +51,8 @@ var (
 )
 
 const (
-	maxConnectionsPerServer  = 16
-	defaultParallelDownloads = 3
+	maxConnectionsPerServer  = 8
+	defaultParallelDownloads = 2
 	defaultTimeout           = 60
 	defaultConnectTimeout    = 30
 	defaultMaxTries          = 5
@@ -298,26 +314,15 @@ func setupDestination(destination string) (string, error) {
 
 // downloadFile performs a single download with aria2c
 func downloadFile(ctx context.Context, item *DownloadItem, targetDir string, config *Config) error {
-	if !config.Quiet {
-		fmt.Printf("🔍 Detecting filename for: %s%s%s\n", colorCyan, item.URL, colorReset)
-	}
-
 	// Detect actual filename
 	filename, err := detectFilename(ctx, item.URL, config.UserAgent, config.ConnectTimeout)
 	if err != nil {
-		if !config.Quiet {
-			fmt.Printf("%s⚠️  Could not detect filename, using URL fallback: %v%s\n", colorYellow, err, colorReset)
-		}
 		// Fallback to URL-based inference on error
 		filename = inferFilenameFromURL(item.URL)
 	}
 
 	item.Filename = filename
 	item.FilePath = filepath.Join(targetDir, filename)
-
-	if !config.Quiet {
-		fmt.Printf("📥 Downloading: %s%s%s → %s%s%s\n", colorCyan, item.URL, colorReset, colorCyan, item.FilePath, colorReset)
-	}
 
 	args := buildAria2cArgs(targetDir, filename, item.URL, config)
 
@@ -364,7 +369,7 @@ func downloadFile(ctx context.Context, item *DownloadItem, targetDir string, con
 	}
 
 	if !config.Quiet {
-		fmt.Printf("%s✅ Completed: %s%s\n", colorGreen, item.FilePath, colorReset)
+		logSuccess("Downloaded: %s", item.FilePath)
 	}
 
 	return nil
@@ -394,9 +399,9 @@ func runDownloads(ctx context.Context, urls []string, config *Config) error {
 
 	if !config.Quiet {
 		if len(urls) == 1 {
-			fmt.Printf("Starting download...\n")
+			logInfo("Starting download...")
 		} else {
-			fmt.Printf("Starting batch download of %s%d%s files...\n", colorCyan, len(urls), colorReset)
+			logInfo("Starting batch download of %d files...", len(urls))
 		}
 	}
 
@@ -413,18 +418,14 @@ func runDownloads(ctx context.Context, urls []string, config *Config) error {
 			sem <- struct{}{}        // Acquire semaphore
 			defer func() { <-sem }() // Release semaphore
 
-			if !config.Quiet && len(urls) > 1 {
-				fmt.Printf("\n[%s%d%s/%s%d%s] ", colorCyan, index+1, colorReset, colorCyan, len(urls), colorReset)
-			}
-
 			if err := downloadFile(ctx, &downloads[index], targetDir, config); err != nil {
 				if errors.Is(err, context.Canceled) {
 					if !config.Quiet {
-						fmt.Printf("%s❌ Cancelled: %s%s\n", colorRed, downloads[index].URL, colorReset)
+						logWarning("Cancelled: %s", downloads[index].URL)
 					}
 				} else {
 					if !config.Quiet {
-						fmt.Printf("%s❌ Failed: %s - %v%s\n", colorRed, downloads[index].URL, err, colorReset)
+						logError("Failed: %s - %v", downloads[index].URL, err)
 					}
 					errChan <- fmt.Errorf("download %d failed: %w", index+1, err)
 				}
@@ -500,7 +501,7 @@ func main() {
 
 	// Check for aria2c availability
 	if _, err := exec.LookPath("aria2c"); err != nil {
-		fmt.Fprintf(os.Stderr, "%sError: aria2c not found in PATH. Please install aria2c.%s\n", colorRed, colorReset)
+		fmt.Fprintf(os.Stderr, colorRed+"[ERROR] "+colorReset+"aria2c not found in PATH. Please install aria2c.\n")
 		os.Exit(1)
 	}
 
@@ -515,25 +516,25 @@ func main() {
 
 	go func() {
 		<-sigChan
-		fmt.Fprintf(os.Stderr, "\n%sReceived interrupt signal, cancelling downloads...%s\n", colorYellow, colorReset)
+		fmt.Fprintf(os.Stderr, "\n"+colorYellow+"[WARNING] "+colorReset+"Received interrupt signal, cancelling downloads...\n")
 		cancel()
 	}()
 
 	// Run downloads
 	if err := runDownloads(ctx, urls, config); err != nil {
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintf(os.Stderr, "%sDownloads cancelled.%s\n", colorYellow, colorReset)
+			fmt.Fprintf(os.Stderr, colorYellow+"[WARNING] "+colorReset+"Downloads cancelled.\n")
 			os.Exit(130)
 		}
-		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+		fmt.Fprintf(os.Stderr, colorRed+"[ERROR] "+colorReset+"%v\n", err)
 		os.Exit(1)
 	}
 
 	if !config.Quiet {
 		if len(urls) == 1 {
-			fmt.Printf("%sDownload completed successfully!%s\n", colorGreen, colorReset)
+			logSuccess("Download completed successfully!")
 		} else {
-			fmt.Printf("%sAll downloads completed successfully!%s\n", colorGreen, colorReset)
+			logSuccess("All downloads completed successfully!")
 		}
 	}
 }
