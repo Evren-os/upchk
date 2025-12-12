@@ -12,13 +12,16 @@ import (
 )
 
 const (
+	version        = "1.0.0"
+	commandTimeout = 30 * time.Second
+)
+
+var (
 	colorRed    = "\033[31m"
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
 	colorCyan   = "\033[36m"
 	colorReset  = "\033[0m"
-
-	commandTimeout = 30 * time.Second
 )
 
 type updateResult struct {
@@ -26,64 +29,80 @@ type updateResult struct {
 	err    error
 }
 
+func init() {
+	// Disable colors if NO_COLOR env var is set or not in a TTY
+	if os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
+		colorRed = ""
+		colorGreen = ""
+		colorYellow = ""
+		colorCyan = ""
+		colorReset = ""
+	}
+}
+
 func main() {
 	noVersion := flag.Bool("no-ver", false, "Strip version details from output")
+	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("update-checker v%s\n", version)
+		os.Exit(0)
+	}
 
 	// Verify required commands exist
 	if _, err := exec.LookPath("checkupdates"); err != nil {
-		fmt.Printf("%scheckupdates is MIA. Install 'pacman-contrib' or rot.%s\n", colorRed, colorReset)
+		fmt.Fprintf(os.Stderr, "%scheckupdates is MIA. Install 'pacman-contrib' or rot.%s\n", colorRed, colorReset)
 		os.Exit(1)
 	}
 
 	aurHelper := detectAURHelper()
 	if aurHelper == "" {
-		fmt.Printf("%sNo AUR helper found. Install paru or yay.%s\n", colorRed, colorReset)
+		fmt.Fprintf(os.Stderr, "%sNo AUR helper found. Install paru or yay.%s\n", colorRed, colorReset)
 		os.Exit(1)
 	}
 
 	// Fetch updates concurrently
+	ctx, cancel := context.WithTimeout(context.Background(), 2*commandTimeout)
+	defer cancel()
+
 	var wg sync.WaitGroup
-	officialChan := make(chan updateResult, 1)
-	aurChan := make(chan updateResult, 1)
+	officialChan := make(chan updateResult)
+	aurChan := make(chan updateResult)
 
 	wg.Add(2)
+
 	go func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				officialChan <- updateResult{"", fmt.Errorf("panic recovered: %v", r)}
-			}
-		}()
-		output, err := fetchOfficialUpdates()
+		output, err := fetchOfficialUpdates(ctx)
 		officialChan <- updateResult{output, err}
 	}()
 
 	go func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				aurChan <- updateResult{"", fmt.Errorf("panic recovered: %v", r)}
-			}
-		}()
-		output, err := fetchAURUpdates(aurHelper)
+		output, err := fetchAURUpdates(ctx, aurHelper)
 		aurChan <- updateResult{output, err}
 	}()
 
-	wg.Wait()
-	close(officialChan)
-	close(aurChan)
+	// Close channels after all goroutines complete
+	go func() {
+		wg.Wait()
+		close(officialChan)
+		close(aurChan)
+	}()
 
+	// Collect results
 	officialResult := <-officialChan
 	aurResult := <-aurChan
 
 	// Handle errors - only report actual failures, not "no updates"
 	if officialResult.err != nil {
-		fmt.Printf("%sFailed to check official updates: %v%s\n", colorRed, officialResult.err, colorReset)
+		fmt.Fprintf(os.Stderr, "%sFailed to check official updates: %v%s\n", colorRed, officialResult.err, colorReset)
 		os.Exit(1)
 	}
+
 	if aurResult.err != nil {
-		fmt.Printf("%sFailed to check AUR updates: %v%s\n", colorRed, aurResult.err, colorReset)
+		fmt.Fprintf(os.Stderr, "%sFailed to check AUR updates: %v%s\n", colorRed, aurResult.err, colorReset)
 		os.Exit(1)
 	}
 
@@ -108,55 +127,59 @@ func detectAURHelper() string {
 	return ""
 }
 
-func runCommand(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
-	defer cancel()
-
+func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.Output()
+
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("command timed out")
+			return "", fmt.Errorf("command timed out after %v", commandTimeout)
+		}
+		// Return original error with stderr if available
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("%w: %s", err, string(exitErr.Stderr))
 		}
 		return "", err
 	}
+
 	return strings.TrimSpace(string(output)), nil
 }
 
-func fetchOfficialUpdates() (string, error) {
-	output, err := runCommand("checkupdates")
+func fetchOfficialUpdates(ctx context.Context) (string, error) {
+	output, err := runCommand(ctx, "checkupdates")
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
 			return "", nil // Exit code 2 means no updates
 		}
-		return "", err
+		return "", fmt.Errorf("checkupdates failed: %w", err)
 	}
 	return output, nil
 }
 
-func fetchAURUpdates(aurHelper string) (string, error) {
-	output, err := runCommand(aurHelper, "-Qua")
+func fetchAURUpdates(ctx context.Context, aurHelper string) (string, error) {
+	output, err := runCommand(ctx, aurHelper, "-Qua")
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return "", nil // Exit code 1 means no updates for paru/yay
 		}
-		return "", err
+		return "", fmt.Errorf("%s failed: %w", aurHelper, err)
 	}
 
 	if output == "" {
 		return "", nil
 	}
 
-	lines := strings.Split(output, "\n")
+	// Filter out [ignored] packages and normalize whitespace
 	var builder strings.Builder
-
-	for _, line := range lines {
+	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		// Normalize whitespace and filter ignored packages
+
+		// Normalize whitespace
 		line = strings.Join(strings.Fields(line), " ")
+
 		if !strings.HasSuffix(line, "[ignored]") {
 			if builder.Len() > 0 {
 				builder.WriteByte('\n')
@@ -173,14 +196,13 @@ func stripVersions(updates string) string {
 		return ""
 	}
 
-	lines := strings.Split(updates, "\n")
 	var builder strings.Builder
-
-	for _, line := range lines {
+	for _, line := range strings.Split(updates, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
+
 		parts := strings.Fields(line)
 		if len(parts) > 0 {
 			if builder.Len() > 0 {
@@ -197,16 +219,15 @@ func countUpdates(updates string) int {
 	if updates == "" {
 		return 0
 	}
+
+	// Count non-empty lines
 	count := 0
-	for _, r := range updates {
-		if r == '\n' {
+	for _, line := range strings.Split(updates, "\n") {
+		if strings.TrimSpace(line) != "" {
 			count++
 		}
 	}
-	// Add 1 for the last line if the string is not empty
-	if len(updates) > 0 {
-		count++
-	}
+
 	return count
 }
 
@@ -220,16 +241,27 @@ func displayResults(official, aur string) {
 	}
 
 	if officialCount > 0 {
-		fmt.Printf("%sThe mothership is hailing: %s%d%s new directives.%s\n", colorGreen, colorCyan, officialCount, colorGreen, colorReset)
+		fmt.Printf("%sThe mothership is hailing: %s%d%s new directives.%s\n",
+			colorGreen, colorCyan, officialCount, colorGreen, colorReset)
 		fmt.Println(official)
 	} else {
 		fmt.Printf("%sMainline is stable. As it should be.%s\n", colorGreen, colorReset)
 	}
 
 	if aurCount > 0 {
-		fmt.Printf("%s%s%d%s new AUR bounties.%s\n", colorYellow, colorCyan, aurCount, colorYellow, colorReset)
+		fmt.Printf("%s%s%d%s new AUR bounties.%s\n",
+			colorYellow, colorCyan, aurCount, colorYellow, colorReset)
 		fmt.Println(aur)
 	} else {
 		fmt.Printf("%sAUR sleeps. Silence is deadly.%s\n", colorGreen, colorReset)
 	}
+}
+
+// isTerminal checks if the given file descriptor is a terminal
+func isTerminal(f *os.File) bool {
+	// Use a simple stat check - if it's a character device, it's likely a terminal
+	if fileInfo, err := f.Stat(); err == nil {
+		return (fileInfo.Mode() & os.ModeCharDevice) != 0
+	}
+	return false
 }
