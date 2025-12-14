@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -30,7 +31,6 @@ type updateResult struct {
 }
 
 func init() {
-	// Disable colors if NO_COLOR env var is set or not in a TTY
 	if os.Getenv("NO_COLOR") != "" || !isTerminal(os.Stdout) {
 		colorRed = ""
 		colorGreen = ""
@@ -50,7 +50,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Verify required commands exist
 	if _, err := exec.LookPath("checkupdates"); err != nil {
 		fmt.Fprintf(os.Stderr, "%scheckupdates is MIA. Install 'pacman-contrib' or rot.%s\n", colorRed, colorReset)
 		os.Exit(1)
@@ -62,7 +61,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Fetch updates concurrently
 	ctx, cancel := context.WithTimeout(context.Background(), 2*commandTimeout)
 	defer cancel()
 
@@ -84,18 +82,15 @@ func main() {
 		aurChan <- updateResult{output, err}
 	}()
 
-	// Close channels after all goroutines complete
 	go func() {
 		wg.Wait()
 		close(officialChan)
 		close(aurChan)
 	}()
 
-	// Collect results
 	officialResult := <-officialChan
 	aurResult := <-aurChan
 
-	// Handle errors - only report actual failures, not "no updates"
 	if officialResult.err != nil {
 		fmt.Fprintf(os.Stderr, "%sFailed to check official updates: %v%s\n", colorRed, officialResult.err, colorReset)
 		os.Exit(1)
@@ -130,26 +125,24 @@ func detectAURHelper() string {
 func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	output, err := cmd.Output()
-
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("command timed out after %v", commandTimeout)
 		}
-		// Return original error with stderr if available
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("%w: %s", err, string(exitErr.Stderr))
 		}
 		return "", err
 	}
-
 	return strings.TrimSpace(string(output)), nil
 }
 
 func fetchOfficialUpdates(ctx context.Context) (string, error) {
 	output, err := runCommand(ctx, "checkupdates")
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 {
-			return "", nil // Exit code 2 means no updates
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+			return "", nil
 		}
 		return "", fmt.Errorf("checkupdates failed: %w", err)
 	}
@@ -159,27 +152,23 @@ func fetchOfficialUpdates(ctx context.Context) (string, error) {
 func fetchAURUpdates(ctx context.Context, aurHelper string) (string, error) {
 	output, err := runCommand(ctx, aurHelper, "-Qua")
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return "", nil // Exit code 1 means no updates for paru/yay
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", nil
 		}
 		return "", fmt.Errorf("%s failed: %w", aurHelper, err)
 	}
-
 	if output == "" {
 		return "", nil
 	}
 
-	// Filter out [ignored] packages and normalize whitespace
 	var builder strings.Builder
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
-		// Normalize whitespace
 		line = strings.Join(strings.Fields(line), " ")
-
 		if !strings.HasSuffix(line, "[ignored]") {
 			if builder.Len() > 0 {
 				builder.WriteByte('\n')
@@ -187,7 +176,6 @@ func fetchAURUpdates(ctx context.Context, aurHelper string) (string, error) {
 			builder.WriteString(line)
 		}
 	}
-
 	return builder.String(), nil
 }
 
@@ -195,14 +183,12 @@ func stripVersions(updates string) string {
 	if updates == "" {
 		return ""
 	}
-
 	var builder strings.Builder
 	for _, line := range strings.Split(updates, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
 		parts := strings.Fields(line)
 		if len(parts) > 0 {
 			if builder.Len() > 0 {
@@ -211,7 +197,6 @@ func stripVersions(updates string) string {
 			builder.WriteString(parts[0])
 		}
 	}
-
 	return builder.String()
 }
 
@@ -219,15 +204,12 @@ func countUpdates(updates string) int {
 	if updates == "" {
 		return 0
 	}
-
-	// Count non-empty lines
 	count := 0
 	for _, line := range strings.Split(updates, "\n") {
 		if strings.TrimSpace(line) != "" {
 			count++
 		}
 	}
-
 	return count
 }
 
@@ -257,9 +239,7 @@ func displayResults(official, aur string) {
 	}
 }
 
-// isTerminal checks if the given file descriptor is a terminal
 func isTerminal(f *os.File) bool {
-	// Use a simple stat check - if it's a character device, it's likely a terminal
 	if fileInfo, err := f.Stat(); err == nil {
 		return (fileInfo.Mode() & os.ModeCharDevice) != 0
 	}
