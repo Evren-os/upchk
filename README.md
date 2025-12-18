@@ -1,45 +1,51 @@
 # upchk
 
-Personal Arch update checker I threw together for my CachyOS setup. Checks official repos and AUR concurrently because waiting is boring.
+> Concurrent Arch Linux update checker for official repos and AUR
 
-## What it does
+---
 
-- Runs `checkupdates` and `paru`/`yay -Qua` in parallel
-- Shows update counts with color-coded output
-- Strips version numbers if you want (`--no-ver`)
-- Respects `NO_COLOR` and auto-detects TTY
+## Features
 
-## Install
+- **Parallel checks** - queries official repos and AUR simultaneously
+- **Smart detection** - auto-finds `paru` or `yay`
+- **Clean output** - color-coded results with update counts
+- **Respectful** - honors `NO_COLOR` and TTY detection
+
+## Installation
+
 ```bash
-go build -o upchk
-sudo mv upchk /usr/local/bin/
+go build -o upchk && sudo mv upchk /usr/local/bin/
 ```
 
 ## Usage
+
 ```bash
-# Check for updates
 upchk
+```
 
-# Without version details
-upchk --no-ver
+**Output examples:**
 
-# Show version
-upchk --version
+```
+[3] Official updates
+linux 6.12.1 -> 6.12.2
+mesa 24.2.0 -> 24.2.1
+firefox 132.0 -> 133.0
+
+[1] AUR updates
+visual-studio-code-bin 1.94 -> 1.95
+```
+
+```
+✓ System is up to date
 ```
 
 ## Requirements
 
-- `checkupdates` (from `pacman-contrib`)
-- `paru` or `yay`
-
-## Why this exists
-
-Got tired of running two commands. Made one command. That's it.
+| Package | Source |
+|---------|--------|
+| `checkupdates` | `pacman-contrib` |
+| `paru` or `yay` | AUR |
 
 ## License
 
-Do whatever you want with it.
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT
