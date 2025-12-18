@@ -77,7 +77,7 @@ func run() error {
 	}
 
 	if !hasOutput {
-		fmt.Printf("%s✓  All patched. The universe is in balance%s\n", green, reset)
+		fmt.Printf("%s✓ All patched. The universe is in balance%s\n", green, reset)
 	}
 
 	return nil

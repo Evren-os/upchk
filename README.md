@@ -36,7 +36,7 @@ visual-studio-code-bin 1.94 -> 1.95
 ```
 
 ```
-✓  All patched. The universe is in balance
+✓ All patched. The universe is in balance
 ```
 
 ## Requirements
